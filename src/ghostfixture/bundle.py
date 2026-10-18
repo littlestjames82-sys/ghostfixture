@@ -35,6 +35,14 @@ class BundleError(ValueError):
 
 @dataclass
 class BundleEntry:
+    """One referenced file from a bundle manifest.
+
+    ``mode`` is the bundle's mode for the file (anything other than
+    ``exclude`` counts as referenced). ``redactions`` and
+    ``redaction_kinds`` carry the guard findings the bundle recorded
+    for the file, or stay empty when it recorded none.
+    """
+
     path: str
     mode: str
     language: str = "text"
@@ -56,6 +64,10 @@ class BundleEntry:
 
 @dataclass
 class Bundle:
+    """A parsed GhostSlice bundle: its manifest plus the split of
+    entries into referenced files (``entries``) and the paths the
+    bundle listed with mode ``exclude`` (``excluded``)."""
+
     path: Path
     manifest: dict
     manifest_sha256: str
@@ -65,10 +77,18 @@ class Bundle:
 
     @property
     def referenced_paths(self) -> list:
+        """Project-relative paths of every referenced (non-exclude) entry."""
         return [e.path for e in self.entries]
 
 
 def load_bundle(bundle_path) -> Bundle:
+    """Read and validate a bundle's ``manifest.json``.
+
+    Returns a Bundle with referenced entries in manifest order and
+    duplicate paths removed. Raises BundleError when the bundle is
+    not a directory, the manifest cannot be read or parsed, or an
+    entry has no string ``path``.
+    """
     bundle = Path(bundle_path)
     if not bundle.is_dir():
         raise BundleError(f"bundle is not a directory: {bundle}")

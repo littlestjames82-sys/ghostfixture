@@ -2,6 +2,13 @@
 
 A five-minute tour using the demo project in this folder.
 
+Prerequisites: Python 3.10 or newer, and either the package
+installed (`pip install .` from the repository root) or every
+command run with `PYTHONPATH=src` from the repository root.
+All commands below run from the repository root. The demo
+secret in `demo/keys.py` is fake and planted on purpose, so
+the exclusion step has something to catch.
+
 ## What is in this folder
 
 - `demo_project/` - a tiny Python project with four modules:
@@ -88,3 +95,36 @@ ghostfixture build examples/demo_project examples/demo_bundle \
 Now keys.py is copied, but the manifest still records that it
 was flagged and that it was included by override. There is no
 quiet way to include a flagged file.
+
+## Reading the result with --json
+
+Add `--json` to either command when a script, not a person,
+is reading the result:
+
+```sh
+ghostfixture build examples/demo_project examples/demo_bundle \
+    -o /tmp/demo-fixture-json --json
+ghostfixture check /tmp/demo-fixture-json --json
+```
+
+`build --json` prints the full fixture manifest (the same
+record written to `fixture-manifest.json`); `check --json`
+prints the check result, including its `ok` field and any
+problems found.
+
+## If something goes wrong
+
+- **Exit 2, "output directory exists and is not empty"**:
+  builds never write into a non-empty directory. Pick a new
+  `-o` path, or remove the old fixture first. Re-running a
+  build into the fixture from Step 1 fails this way on
+  purpose.
+- **Exit 2, could not build**: the project or bundle path is
+  wrong, or the output would land inside the project. Check
+  the two positional arguments first.
+- **Exit 1 from build**: the fixture would be empty, meaning
+  nothing referenced could be copied. The summary names each
+  file left out and its reason.
+- **Exit 1 from check**: the tree no longer matches its
+  manifest. The output lists each problem, such as an edited,
+  missing, or unexpected file.

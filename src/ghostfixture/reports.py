@@ -3,6 +3,12 @@ from __future__ import annotations
 
 
 def render_fixture_md(m: dict) -> str:
+    """Render a fixture manifest dict as the human-readable FIXTURE.md.
+
+    Mirrors the manifest: what was included and why, what was
+    excluded or left out and why, plus any drift and upstream
+    guard disagreement sections when the manifest carries them.
+    """
     t = m["totals"]
     lines: list = []
     lines.append("# GhostFixture - minimal repro project")

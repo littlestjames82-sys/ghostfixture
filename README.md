@@ -11,10 +11,27 @@ fidelity, plus the local files those files import, and nothing
 else. Flagged secrets are excluded by default, and everything
 left out is named with a reason.
 
+## Install
+
+Requirements: Python 3.10 or newer. GhostFixture uses only the
+Python standard library, so there is nothing else to install.
+
+```sh
+pip install .
+ghostfixture --version
+```
+
+Without installing, run it from a checkout with
+`PYTHONPATH=src python3 -m ghostfixture ...`, exactly as the
+walkthrough in `examples/` does.
+
 ## Quick start
 
 ```sh
+# 1. Build a fixture from a project and the bundle cut from it.
 ghostfixture build <project> <bundle> -o <out-dir> [--task "..."]
+
+# 2. Later, or on another machine, verify the tree is unchanged.
 ghostfixture check <fixture-dir>
 ```
 
@@ -25,11 +42,52 @@ ghostfixture check <fixture-dir>
   tree.
 - `check` re-verifies a fixture tree against its manifest:
   every included file present with a matching sha256, no
-  unexplained extra files, no excluded file present. Exit 0
-  clean, 1 mismatch, 2 could not check.
+  unexplained extra files, no excluded file present.
 
-Build exit codes: 0 fixture built, 1 fixture would be empty,
-2 could not build.
+Worked example with the bundled demo project and demo bundle:
+
+```sh
+ghostfixture build examples/demo_project examples/demo_bundle \
+    -o /tmp/demo-fixture --task "Fix the tax rounding in pricing.py"
+ghostfixture check /tmp/demo-fixture
+```
+
+See `examples/README.md` for what that build includes, what it
+leaves out, and why.
+
+## Command reference
+
+`ghostfixture build <project> <bundle> -o <out-dir> [options]`
+
+| Option | What it does |
+| --- | --- |
+| `-o`, `--out DIR` | Required. New output directory. It must not be inside the project, must not contain the project, and an existing non-empty directory is refused. |
+| `--task "..."` | Task description recorded in the manifest and `FIXTURE.md`. |
+| `--task-file FILE` | Read the task description from a file instead. Takes precedence over `--task` when both are given. |
+| `--max-bytes N` | Cap on total copied content, in bytes (default 2097152, 2 MiB). |
+| `--include-flagged` | Copy secret-flagged files anyway. The flag and the override stay on record in the manifest. |
+| `--json` | Print the full fixture manifest as JSON instead of the human summary. |
+
+`ghostfixture check <fixture-dir> [--json]`
+
+Re-verifies the fixture against its `fixture-manifest.json`.
+`--json` prints the check result as JSON instead of the human
+summary.
+
+`ghostfixture mcp`
+
+Runs the stdio MCP server described under "What you get".
+
+Exit codes:
+
+| Command | 0 | 1 | 2 |
+| --- | --- | --- | --- |
+| `build` | fixture built | fixture would be empty | could not build |
+| `check` | clean | mismatch | could not check |
+
+Exclusions and left-out files during a build are normal,
+reported outcomes, not failures: a build that copies at least
+one file exits 0 and names everything it left out.
 
 ## The rules it keeps
 
@@ -96,16 +154,27 @@ files:
 - `FIXTURE.md` - the same record in human form, plus how the
   fixture was made and its limits.
 
-An MCP server (`ghostfixture mcp`, stdio, local only) exposes
-`build_fixture` and `check_fixture` with capped summary
-payloads and no file bodies.
+An MCP server (`ghostfixture mcp`, stdio, local only, no
+network) exposes two tools with capped summary payloads and
+no file bodies:
+
+| Tool | Arguments | Returns |
+| --- | --- | --- |
+| `build_fixture` | `project`, `bundle`, `out` (required); `task`, `max_bytes` (optional) | Totals, the size cap, and the included, excluded-flagged, and left-out lists |
+| `check_fixture` | `fixture` | The same result as `ghostfixture check` |
 
 ## Honest limits
 
 - **A fixture is not guaranteed to run.** The closure is
   static and parse-level (Python via `ast`, JS/TS via import
-  patterns, Go via package resolution, other languages not
-  computed in v0.1 and labelled as such in the manifest).
+  patterns, Go via package resolution, C/C++ via preprocessor
+  `#include` directives, other languages not computed in v0.1
+  and labelled as such in the manifest). For C/C++, only the
+  quoted include form is resolved (against the including
+  file's directory, then the project root); angle-bracket
+  includes and macro includes are recorded as external
+  references, since their search path is a build flag this
+  tool never sees.
   Go resolution needs a `go.mod`: a module-local import path
   pulls in every non-test `.go` file of that package
   directory (`*_test.go` files stay out), and a directory

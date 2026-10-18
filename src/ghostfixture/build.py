@@ -48,15 +48,35 @@ class FixtureError(ValueError):
 
 
 def _sha256(data: bytes) -> str:
+    """Hex sha256 of *data*, the digest recorded for every copied file."""
     return hashlib.sha256(data).hexdigest()
 
 
 def _inside(root_real: Path, candidate: Path) -> bool:
+    """True when *candidate* resolves inside *root_real* (symlinks resolved)."""
     try:
         candidate.resolve().relative_to(root_real)
         return True
     except (ValueError, RuntimeError, OSError):
         return False
+
+
+def _path_shape_problem(rel: str) -> str | None:
+    """Why ``rel`` is not a clean project-relative path, or None.
+
+    Candidate paths come from the bundle manifest and from import
+    resolution: data this tool did not write. A path that is absolute
+    or carries '.'/'..'/empty segments can resolve INSIDE the project
+    yet land OUTSIDE the output tree when joined to it (the two roots
+    sit at different depths), and an absolute path that passes the
+    inside check points the copy destination at the source file
+    itself. Such paths are never copied, only recorded.
+    """
+    if not rel or rel.startswith("/") or Path(rel).is_absolute():
+        return "path is empty or absolute, not project-relative"
+    if any(seg in ("", ".", "..") for seg in rel.split("/")):
+        return "path contains '.'/'..' or empty segments, not a clean project-relative path"
+    return None
 
 
 def _validate_locations(project: Path, out: Path) -> tuple:
@@ -66,10 +86,21 @@ def _validate_locations(project: Path, out: Path) -> tuple:
     project_real = project.resolve()
     out_abs = out if out.is_absolute() else (Path.cwd() / out)
     out_abs = Path(*out_abs.parts)  # normalise without resolving symlinks in the tail
-    out_real_parent = out_abs.parent.resolve() if out_abs.parent.exists() else None
-    if out_real_parent is None:
-        raise FixtureError(f"output parent does not exist: {out_abs.parent}")
-    out_real = out_real_parent / out_abs.name
+    if out_abs.is_symlink() and not out_abs.exists():
+        raise FixtureError(f"output path is a broken symlink: {out}")
+    if out_abs.exists() and not out_abs.is_dir():
+        raise FixtureError(f"output path exists and is not a directory: {out}")
+    if out_abs.exists():
+        # Resolve the output path ITSELF, not just its parent: when
+        # the final component is a symlink into the project, the
+        # parent-based computation below names a path outside the
+        # project while every write lands inside it.
+        out_real = out_abs.resolve()
+    else:
+        out_real_parent = out_abs.parent.resolve() if out_abs.parent.exists() else None
+        if out_real_parent is None:
+            raise FixtureError(f"output parent does not exist: {out_abs.parent}")
+        out_real = out_real_parent / out_abs.name
     if out_real == project_real or project_real in out_real.parents:
         raise FixtureError("output directory must not be inside the project (the source project is never written to)")
     if out_real in project_real.parents:
@@ -84,7 +115,17 @@ def build_fixture(project, bundle_path, out_dir, task: str = "",
                   include_flagged: bool = False) -> dict:
     """Build a fixture tree. Returns the fixture manifest dict.
 
+    ``project`` is the original project (read only), ``bundle_path``
+    the GhostSlice bundle whose manifest selects the seed files, and
+    ``out_dir`` the new output directory (see ``_validate_locations``
+    for the placement rules). ``task`` is recorded verbatim in the
+    manifest, ``max_bytes`` caps total copied content, and
+    ``include_flagged`` copies secret-flagged files anyway while
+    keeping their flags on record.
+
     Raises FixtureError (or BundleError) when no fixture can be built.
+    A build that copies nothing is not an exception here: the caller
+    maps an empty manifest to exit 1.
     """
     project = Path(project)
     out = Path(out_dir)
@@ -188,6 +229,18 @@ def build_fixture(project, bundle_path, out_dir, task: str = "",
             _left_out(rel, "bundle-excluded",
                       "listed in the bundle manifest with mode exclude; "
                       "import closure never overrides a bundle exclusion")
+            continue
+        shape_problem = _path_shape_problem(rel)
+        if shape_problem:
+            _left_out(rel, "outside-root",
+                      shape_problem + "; the path is not followed or copied")
+            continue
+        if rel in _OWN_FILES:
+            _left_out(rel, "reserved-output-name",
+                      "path collides with the fixture's own record files "
+                      "(fixture-manifest.json, FIXTURE.md) written at the "
+                      "fixture root; the record files win, so a same-named "
+                      "project file cannot be copied there")
             continue
         data = consider(rel)
         if data is None:
@@ -324,7 +377,13 @@ class CheckError(ValueError):
 
 
 def check_fixture(fixture_dir) -> dict:
-    """Re-verify a fixture tree against its fixture-manifest.json."""
+    """Re-verify a fixture tree against its fixture-manifest.json.
+
+    Returns a dict with ``ok``, ``files_checked`` and ``problems``
+    (plus any ignored runtime byproducts). Raises CheckError when
+    the fixture cannot be checked at all, for example when its
+    manifest is missing or invalid.
+    """
     root = Path(fixture_dir)
     mpath = root / FIXTURE_MANIFEST
     if not mpath.is_file():
@@ -333,26 +392,56 @@ def check_fixture(fixture_dir) -> dict:
         manifest = json.loads(mpath.read_text(encoding="utf-8"))
     except (ValueError, OSError) as exc:
         raise CheckError(f"{FIXTURE_MANIFEST}: invalid ({exc})") from exc
+    if not isinstance(manifest, dict):
+        raise CheckError(f"{FIXTURE_MANIFEST}: top level must be an object")
+    included_entries = manifest.get("included", [])
+    excluded_entries = manifest.get("excluded_flagged", [])
+    if not isinstance(included_entries, list) \
+            or not all(isinstance(e, dict) for e in included_entries):
+        raise CheckError(f"{FIXTURE_MANIFEST}: 'included' must be a list of objects")
+    if not isinstance(excluded_entries, list) \
+            or not all(isinstance(e, dict) for e in excluded_entries):
+        raise CheckError(f"{FIXTURE_MANIFEST}: 'excluded_flagged' must be a list of objects")
     problems: list = []
     expected: set = set()
-    for entry in manifest.get("included", []):
-        rel = entry.get("path", "")
+    for entry in included_entries:
+        rel = entry.get("path")
+        if not isinstance(rel, str) or not rel:
+            problems.append("an included entry has no string 'path'")
+            continue
         expected.add(rel)
+        if _path_shape_problem(rel):
+            problems.append(f"{rel}: path is not a clean fixture-relative path; not verified")
+            continue
         f = root / rel
         if not f.is_file():
             problems.append(f"{rel}: missing from fixture tree")
             continue
-        actual = _sha256(f.read_bytes())
-        if actual != entry.get("sha256"):
+        try:
+            data = f.read_bytes()
+        except OSError as exc:
+            problems.append(f"{rel}: unreadable ({exc})")
+            continue
+        if _sha256(data) != entry.get("sha256"):
             problems.append(f"{rel}: sha256 mismatch (file changed after build)")
-    for entry in manifest.get("excluded_flagged", []):
+    for entry in excluded_entries:
         if entry.get("included_by_override"):
             continue
-        rel = entry.get("path", "")
+        rel = entry.get("path")
+        if not isinstance(rel, str) or not rel:
+            problems.append("an excluded-flagged entry has no string 'path'")
+            continue
+        if _path_shape_problem(rel):
+            problems.append(f"{rel}: path is not a clean fixture-relative path; not verified")
+            continue
         if (root / rel).exists():
             problems.append(f"{rel}: excluded-flagged file is present in the fixture tree")
     ignored: list = []
-    for f in sorted(root.rglob("*")):
+    try:
+        walked = sorted(root.rglob("*"))
+    except OSError as exc:
+        raise CheckError(f"cannot walk fixture tree: {exc}") from exc
+    for f in walked:
         if f.is_file():
             rel = f.relative_to(root).as_posix()
             if rel in expected or rel in _OWN_FILES:

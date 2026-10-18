@@ -20,11 +20,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "project": {"type": "string"},
-                "bundle": {"type": "string"},
-                "out": {"type": "string"},
-                "task": {"type": "string"},
-                "max_bytes": {"type": "integer"},
+                "project": {"type": "string", "description": "path to the original project (read only)"},
+                "bundle": {"type": "string", "description": "path to the GhostSlice bundle"},
+                "out": {"type": "string", "description": "new output directory for the fixture"},
+                "task": {"type": "string", "description": "task description recorded in the manifest (optional)"},
+                "max_bytes": {"type": "integer", "description": "cap on total copied content in bytes (default: 2097152)"},
             },
             "required": ["project", "bundle", "out"],
         },
@@ -34,7 +34,7 @@ TOOLS = [
         "description": "Re-verify a fixture tree against its fixture-manifest.json.",
         "inputSchema": {
             "type": "object",
-            "properties": {"fixture": {"type": "string"}},
+            "properties": {"fixture": {"type": "string", "description": "path to a fixture directory built by build_fixture"}},
             "required": ["fixture"],
         },
     },
@@ -44,6 +44,9 @@ _MAX_ITEMS = 50
 
 
 def _summary(manifest: dict) -> dict:
+    """Capped summary of a build manifest: totals plus at most
+    ``_MAX_ITEMS`` entries per list. Paths and reasons only, no
+    file bodies."""
     return {
         "totals": manifest["totals"],
         "max_bytes": manifest["max_bytes"],
@@ -56,6 +59,9 @@ def _summary(manifest: dict) -> dict:
 
 
 def _call_tool(name: str, args: dict) -> dict:
+    """Dispatch one MCP tool call; raises ValueError for unknown tools."""
+    if not isinstance(args, dict):
+        raise ValueError("tool arguments must be an object")
     if name == "build_fixture":
         manifest = build_fixture(
             args["project"], args["bundle"], args["out"],
@@ -69,6 +75,11 @@ def _call_tool(name: str, args: dict) -> dict:
 
 
 def serve(stdin=None, stdout=None) -> None:
+    """Serve JSON-RPC requests line by line until stdin closes.
+
+    Handles ``initialize``, ``tools/list`` and ``tools/call``;
+    unknown methods with an id get a -32601 error reply.
+    """
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     for line in stdin:
@@ -78,6 +89,10 @@ def serve(stdin=None, stdout=None) -> None:
         try:
             req = json.loads(line)
         except ValueError:
+            continue
+        if not isinstance(req, dict):
+            # Valid JSON, but not a JSON-RPC request object. Skip it
+            # like an unparseable line instead of killing the server.
             continue
         method = req.get("method", "")
         rid = req.get("id")
@@ -92,6 +107,8 @@ def serve(stdin=None, stdout=None) -> None:
             _send(stdout, rid, {"tools": TOOLS})
         elif method == "tools/call":
             params = req.get("params") or {}
+            if not isinstance(params, dict):
+                params = {}
             try:
                 payload = _call_tool(params.get("name", ""), params.get("arguments") or {})
                 _send(stdout, rid, {"content": [{"type": "text",
@@ -104,6 +121,7 @@ def serve(stdin=None, stdout=None) -> None:
 
 
 def _send(stdout, rid, result, error=None) -> None:
+    """Write one JSON-RPC response line and flush."""
     msg: dict = {"jsonrpc": "2.0", "id": rid}
     if error is not None:
         msg["error"] = error
