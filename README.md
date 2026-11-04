@@ -1,5 +1,6 @@
 # GhostFixture
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/littlestjames82-sys/ghostfixture/actions/workflows/ci.yml/badge.svg)](https://github.com/littlestjames82-sys/ghostfixture/actions/workflows/ci.yml/actions)
 
 Minimal repro project generator for GhostSlice bundles.
 
